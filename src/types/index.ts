@@ -59,18 +59,33 @@ export interface Member {
   tags: string[];
 }
 
+export interface ProcessRecord {
+  id: string;
+  date: string;
+  type: 'return_supplier' | 'destroy' | 'discount_sale' | 'internal_use';
+  quantity: number;
+  notes?: string;
+}
+
 export interface InventoryItem {
   id: string;
   drugName: string;
   spec: string;
   batchNo: string;
   stock: number;
+  quantity: number;
   unit: string;
   expireDate: string;
+  expiryDate: string;
   daysToExpire: number;
-  status: 'normal' | 'warning' | 'urgent';
+  daysToExpiry: number;
+  status: 'normal' | 'warning' | 'urgent' | 'out_of_stock';
   purchasePrice: number;
   sellingPrice: number;
+  isRx?: boolean;
+  supplier?: string;
+  stockInDate?: string;
+  processRecords?: ProcessRecord[];
 }
 
 export interface FollowUpRecord {

@@ -29,14 +29,15 @@ import {
   Clock,
 } from 'lucide-react';
 import ReactECharts from 'echarts-for-react';
-import { chronicRecords, diseaseTypeOptions } from '@/mock/chronic';
-import type { ChronicRecord } from '@/types';
+import { chronicRecords as initialRecords, diseaseTypeOptions } from '@/mock/chronic';
+import type { ChronicRecord, FollowUpRecord } from '@/types';
+import dayjs from 'dayjs';
 
 const { Option } = Select;
 const { TextArea } = Input;
 
 const ChronicPage: React.FC = () => {
-  const [data, setData] = useState(chronicRecords);
+  const [data, setData] = useState<ChronicRecord[]>(initialRecords);
   const [isDetailOpen, setIsDetailOpen] = useState(false);
   const [isAddFollowUpOpen, setIsAddFollowUpOpen] = useState(false);
   const [currentRecord, setCurrentRecord] = useState<ChronicRecord | null>(null);
@@ -137,20 +138,50 @@ const ChronicPage: React.FC = () => {
   ];
 
   const handleViewDetail = (record: ChronicRecord) => {
-    setCurrentRecord(record);
+    const freshRecord = data.find((r) => r.id === record.id);
+    setCurrentRecord(freshRecord || record);
     setIsDetailOpen(true);
   };
 
   const handleAddFollowUp = (record: ChronicRecord) => {
-    setCurrentRecord(record);
+    const freshRecord = data.find((r) => r.id === record.id);
+    setCurrentRecord(freshRecord || record);
     setIsAddFollowUpOpen(true);
   };
 
   const handleFollowUpSubmit = () => {
     followUpForm.validateFields().then((values) => {
-      message.success('随访记录已保存');
+      if (!currentRecord) return;
+
+      const newFollowUp: FollowUpRecord = {
+        id: Date.now().toString(),
+        date: values.date ? values.date.format('YYYY-MM-DD') : dayjs().format('YYYY-MM-DD'),
+        bloodPressure:
+          values.systolic && values.diastolic
+            ? `${values.systolic}/${values.diastolic}`
+            : undefined,
+        bloodSugar: values.bloodSugar,
+        heartRate: values.heartRate,
+        weight: values.weight,
+        medicationAdherence: values.adherence === true,
+        notes: values.notes || '',
+      };
+
+      const allRecords = [...currentRecord.followUpRecords, newFollowUp];
+      const adherentCount = allRecords.filter((r) => r.medicationAdherence).length;
+      const adherenceRate = Math.round((adherentCount / allRecords.length) * 100);
+
+      const updatedRecord: ChronicRecord = {
+        ...currentRecord,
+        followUpRecords: allRecords,
+        medicationAdherence: adherenceRate,
+      };
+
+      setData((prev) => prev.map((r) => (r.id === currentRecord.id ? updatedRecord : r)));
+      setCurrentRecord(updatedRecord);
       setIsAddFollowUpOpen(false);
       followUpForm.resetFields();
+      message.success('随访记录已保存');
     });
   };
 
@@ -185,6 +216,10 @@ const ChronicPage: React.FC = () => {
           data: bpData.map((d) => d.sys),
           itemStyle: { color: '#F53F3F' },
           lineStyle: { width: 2 },
+          markLine: {
+            silent: true,
+            data: [{ yAxis: 140, lineStyle: { color: '#F53F3F', type: 'dashed' } }],
+          },
         },
         {
           name: '舒张压',
@@ -193,6 +228,10 @@ const ChronicPage: React.FC = () => {
           data: bpData.map((d) => d.dia),
           itemStyle: { color: '#165DFF' },
           lineStyle: { width: 2 },
+          markLine: {
+            silent: true,
+            data: [{ yAxis: 90, lineStyle: { color: '#165DFF', type: 'dashed' } }],
+          },
         },
       ],
     };
@@ -212,6 +251,8 @@ const ChronicPage: React.FC = () => {
       yAxis: {
         type: 'value',
         name: 'mmol/L',
+        min: 3,
+        max: 12,
         axisLabel: { color: '#6b7280' },
         splitLine: { lineStyle: { color: '#f3f4f6' } },
       },
@@ -225,12 +266,21 @@ const ChronicPage: React.FC = () => {
           areaStyle: {
             color: {
               type: 'linear',
-              x: 0, y: 0, x2: 0, y2: 1,
+              x: 0,
+              y: 0,
+              x2: 0,
+              y2: 1,
               colorStops: [
                 { offset: 0, color: 'rgba(114, 46, 209, 0.3)' },
                 { offset: 1, color: 'rgba(114, 46, 209, 0.05)' },
               ],
             },
+          },
+          markLine: {
+            silent: true,
+            data: [
+              { yAxis: 7.0, lineStyle: { color: '#722ED1', type: 'dashed' } },
+            ],
           },
         },
       ],
@@ -274,6 +324,7 @@ const ChronicPage: React.FC = () => {
         onCancel={() => setIsDetailOpen(false)}
         width={900}
         footer={null}
+        destroyOnClose
       >
         {currentRecord && (
           <div>
@@ -313,18 +364,26 @@ const ChronicPage: React.FC = () => {
                   label: '随访记录',
                   children: (
                     <div className="space-y-4">
-                      {currentRecord.diseaseType === 'hypertension' && (
-                        <Card title="血压趋势" size="small" className="mb-4">
-                          <ReactECharts option={getBloodPressureChart(currentRecord)} style={{ height: 200 }} />
-                        </Card>
-                      )}
-                      {currentRecord.diseaseType === 'diabetes' && (
-                        <Card title="血糖趋势" size="small" className="mb-4">
-                          <ReactECharts option={getBloodSugarChart(currentRecord)} style={{ height: 200 }} />
-                        </Card>
-                      )}
+                      {currentRecord.diseaseType === 'hypertension' &&
+                        currentRecord.followUpRecords.some((r) => r.bloodPressure) && (
+                          <Card title="血压趋势" size="small" className="mb-4">
+                            <ReactECharts
+                              option={getBloodPressureChart(currentRecord)}
+                              style={{ height: 200 }}
+                            />
+                          </Card>
+                        )}
+                      {currentRecord.diseaseType === 'diabetes' &&
+                        currentRecord.followUpRecords.some((r) => r.bloodSugar) && (
+                          <Card title="血糖趋势" size="small" className="mb-4">
+                            <ReactECharts
+                              option={getBloodSugarChart(currentRecord)}
+                              style={{ height: 200 }}
+                            />
+                          </Card>
+                        )}
                       <List
-                        dataSource={currentRecord.followUpRecords}
+                        dataSource={[...currentRecord.followUpRecords].reverse()}
                         renderItem={(record) => (
                           <List.Item className="px-4 py-3 bg-gray-50 rounded-lg mb-2">
                             <List.Item.Meta
@@ -348,7 +407,7 @@ const ChronicPage: React.FC = () => {
                                         血压: {record.bloodPressure} mmHg
                                       </span>
                                     )}
-                                    {record.bloodSugar && (
+                                    {record.bloodSugar !== undefined && (
                                       <span>
                                         <Activity size={12} className="mr-1 text-purple-500" />
                                         血糖: {record.bloodSugar} mmol/L
@@ -359,6 +418,9 @@ const ChronicPage: React.FC = () => {
                                         <Clock size={12} className="mr-1 text-blue-500" />
                                         心率: {record.heartRate} 次/分
                                       </span>
+                                    )}
+                                    {record.weight && (
+                                      <span>体重: {record.weight} kg</span>
                                     )}
                                   </div>
                                   <p className="text-gray-600">{record.notes}</p>
@@ -397,10 +459,14 @@ const ChronicPage: React.FC = () => {
       <Modal
         title="记录随访"
         open={isAddFollowUpOpen}
-        onCancel={() => setIsAddFollowUpOpen(false)}
+        onCancel={() => {
+          setIsAddFollowUpOpen(false);
+          followUpForm.resetFields();
+        }}
         onOk={handleFollowUpSubmit}
         width={600}
         okText="保存记录"
+        destroyOnClose
       >
         {currentRecord && (
           <div>
@@ -409,7 +475,12 @@ const ChronicPage: React.FC = () => {
               <p className="text-sm text-gray-500">{currentRecord.diseaseName}</p>
             </div>
             <Form form={followUpForm} layout="vertical">
-              <Form.Item label="随访日期" name="date" rules={[{ required: true }]}>
+              <Form.Item
+                label="随访日期"
+                name="date"
+                rules={[{ required: true, message: '请选择日期' }]}
+                initialValue={dayjs()}
+              >
                 <DatePicker style={{ width: '100%' }} />
               </Form.Item>
               <Row gutter={16}>
@@ -417,12 +488,12 @@ const ChronicPage: React.FC = () => {
                   <>
                     <Col span={12}>
                       <Form.Item label="收缩压(mmHg)" name="systolic">
-                        <InputNumber style={{ width: '100%' }} />
+                        <InputNumber style={{ width: '100%' }} placeholder="如: 135" />
                       </Form.Item>
                     </Col>
                     <Col span={12}>
                       <Form.Item label="舒张压(mmHg)" name="diastolic">
-                        <InputNumber style={{ width: '100%' }} />
+                        <InputNumber style={{ width: '100%' }} placeholder="如: 85" />
                       </Form.Item>
                     </Col>
                   </>
@@ -430,20 +501,26 @@ const ChronicPage: React.FC = () => {
                 {currentRecord.diseaseType === 'diabetes' && (
                   <Col span={12}>
                     <Form.Item label="空腹血糖(mmol/L)" name="bloodSugar">
-                      <InputNumber step={0.1} style={{ width: '100%' }} />
+                      <InputNumber step={0.1} style={{ width: '100%' }} placeholder="如: 7.2" />
                     </Form.Item>
                   </Col>
                 )}
                 <Col span={12}>
                   <Form.Item label="心率(次/分)" name="heartRate">
-                    <InputNumber style={{ width: '100%' }} />
+                    <InputNumber style={{ width: '100%' }} placeholder="如: 72" />
+                  </Form.Item>
+                </Col>
+                <Col span={12}>
+                  <Form.Item label="体重(kg)" name="weight">
+                    <InputNumber step={0.1} style={{ width: '100%' }} placeholder="如: 72.5" />
                   </Form.Item>
                 </Col>
               </Row>
               <Form.Item
                 label="用药依从性"
                 name="adherence"
-                rules={[{ required: true }]}
+                rules={[{ required: true, message: '请选择' }]}
+                initialValue={true}
               >
                 <Select>
                   <Option value={true}>按时服药</Option>

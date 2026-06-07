@@ -26,18 +26,19 @@ import {
   Bell,
   User,
   ShoppingBag,
+  Plus,
 } from 'lucide-react';
-import { members } from '@/mock/member';
-import type { Member } from '@/types';
+import { members as initialMembers } from '@/mock/member';
+import type { Member, MedicationReminder } from '@/types';
+import dayjs from 'dayjs';
 
 const { Option } = Select;
 
 const MemberPage: React.FC = () => {
-  const [data] = useState(members);
+  const [data, setData] = useState<Member[]>(initialMembers);
   const [searchText, setSearchText] = useState('');
   const [isDetailOpen, setIsDetailOpen] = useState(false);
   const [currentMember, setCurrentMember] = useState<Member | null>(null);
-  const [activeTab, setActiveTab] = useState('records');
   const [reminderForm] = Form.useForm();
 
   const levelMap: Record<string, { color: string; text: string }> = {
@@ -134,15 +135,53 @@ const MemberPage: React.FC = () => {
   ];
 
   const handleViewDetail = (record: Member) => {
-    setCurrentMember(record);
+    const freshMember = data.find((m) => m.id === record.id);
+    setCurrentMember(freshMember || record);
     setIsDetailOpen(true);
   };
 
   const handleAddReminder = () => {
     reminderForm.validateFields().then((values) => {
-      message.success('用药提醒已设置');
+      if (!currentMember) return;
+
+      const times = values.time as dayjs.Dayjs[];
+      const timeStr = times.map((t) => t.format('HH:mm')).join(',');
+
+      const newReminder: MedicationReminder = {
+        id: Date.now().toString(),
+        drugName: values.drugName,
+        time: timeStr,
+        frequency: values.frequency,
+        enabled: true,
+      };
+
+      const updatedMember = {
+        ...currentMember,
+        medicationReminders: [...currentMember.medicationReminders, newReminder],
+      };
+
+      setData((prev) => prev.map((m) => (m.id === currentMember.id ? updatedMember : m)));
+      setCurrentMember(updatedMember);
       reminderForm.resetFields();
+      message.success('用药提醒已添加');
     });
+  };
+
+  const handleToggleReminder = (reminderId: string) => {
+    if (!currentMember) return;
+
+    const updatedReminders = currentMember.medicationReminders.map((r) =>
+      r.id === reminderId ? { ...r, enabled: !r.enabled } : r
+    );
+
+    const updatedMember = {
+      ...currentMember,
+      medicationReminders: updatedReminders,
+    };
+
+    setData((prev) => prev.map((m) => (m.id === currentMember.id ? updatedMember : m)));
+    setCurrentMember(updatedMember);
+    message.success('提醒状态已更新');
   };
 
   return (
@@ -182,6 +221,7 @@ const MemberPage: React.FC = () => {
         onCancel={() => setIsDetailOpen(false)}
         width={800}
         footer={null}
+        destroyOnClose
       >
         {currentMember && (
           <div>
@@ -225,8 +265,7 @@ const MemberPage: React.FC = () => {
             </div>
 
             <Tabs
-              activeKey={activeTab}
-              onChange={setActiveTab}
+              defaultActiveKey="records"
               items={[
                 {
                   key: 'records',
@@ -261,8 +300,12 @@ const MemberPage: React.FC = () => {
                   label: '用药提醒',
                   children: (
                     <div>
-                      <div className="mb-4">
-                        <Form layout="inline" form={reminderForm}>
+                      <div className="mb-4 p-4 bg-gray-50 rounded-lg">
+                        <p className="font-medium mb-3">
+                          <Plus size={16} className="inline mr-1" />
+                          添加新提醒
+                        </p>
+                        <Form layout="inline" form={reminderForm} preserve={false}>
                           <Form.Item
                             name="drugName"
                             rules={[{ required: true, message: '请输入药品名称' }]}
@@ -278,43 +321,56 @@ const MemberPage: React.FC = () => {
                           <Form.Item
                             name="frequency"
                             rules={[{ required: true, message: '请选择频次' }]}
+                            initialValue="每日1次"
                           >
                             <Select placeholder="频次" style={{ width: 120 }}>
                               <Option value="每日1次">每日1次</Option>
                               <Option value="每日2次">每日2次</Option>
                               <Option value="每日3次">每日3次</Option>
+                              <Option value="饭前">饭前</Option>
+                              <Option value="饭后">饭后</Option>
                             </Select>
                           </Form.Item>
                           <Form.Item>
                             <Button type="primary" onClick={handleAddReminder}>
-                              添加提醒
+                              添加
                             </Button>
                           </Form.Item>
                         </Form>
                       </div>
-                      <List
-                        dataSource={currentMember.medicationReminders}
-                        renderItem={(reminder) => (
-                          <List.Item className="px-4 py-3">
-                            <List.Item.Meta
-                              avatar={<Bell size={20} className="text-blue-500 mt-1" />}
-                              title={
-                                <div className="flex items-center gap-2">
-                                  <span className="font-medium">{reminder.drugName}</span>
-                                  <Tag color="blue">{reminder.frequency}</Tag>
-                                </div>
-                              }
-                              description={
-                                <span className="flex items-center gap-1 text-gray-500">
-                                  <Clock size={14} />
-                                  {reminder.time}
-                                </span>
-                              }
-                            />
-                            <Switch checked={reminder.enabled} />
-                          </List.Item>
-                        )}
-                      />
+
+                      {currentMember.medicationReminders.length === 0 ? (
+                        <div className="text-center py-8 text-gray-400">
+                          暂无用药提醒，点击上方添加
+                        </div>
+                      ) : (
+                        <List
+                          dataSource={currentMember.medicationReminders}
+                          renderItem={(reminder) => (
+                            <List.Item className="px-4 py-3 bg-gray-50 rounded-lg mb-2">
+                              <List.Item.Meta
+                                avatar={<Bell size={20} className="text-blue-500 mt-1" />}
+                                title={
+                                  <div className="flex items-center gap-2">
+                                    <span className="font-medium">{reminder.drugName}</span>
+                                    <Tag color="blue">{reminder.frequency}</Tag>
+                                  </div>
+                                }
+                                description={
+                                  <span className="flex items-center gap-1 text-gray-500">
+                                    <Clock size={14} />
+                                    {reminder.time}
+                                  </span>
+                                }
+                              />
+                              <Switch
+                                checked={reminder.enabled}
+                                onChange={() => handleToggleReminder(reminder.id)}
+                              />
+                            </List.Item>
+                          )}
+                        />
+                      )}
                     </div>
                   ),
                 },

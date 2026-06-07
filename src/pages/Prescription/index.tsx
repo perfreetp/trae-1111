@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   Card,
   Table,
@@ -15,6 +15,7 @@ import {
   message,
   List,
   Alert,
+  Checkbox,
 } from 'antd';
 import {
   Plus,
@@ -23,21 +24,35 @@ import {
   XCircle,
   AlertTriangle,
   AlertOctagon,
+  RefreshCw,
 } from 'lucide-react';
 import { prescriptions } from '@/mock/prescription';
-import type { Prescription, WarningItem } from '@/types';
+import { members } from '@/mock/member';
+import type { Prescription, WarningItem, PrescriptionDrug } from '@/types';
+import { runFullDrugReview } from '@/utils/drugReview';
 
 const { TextArea } = Input;
 const { Option } = Select;
 
+const allergyOptions = [
+  { label: '青霉素过敏', value: '青霉素过敏' },
+  { label: '头孢过敏', value: '头孢过敏' },
+  { label: '磺胺过敏', value: '磺胺过敏' },
+  { label: '大环内酯过敏', value: '大环内酯过敏' },
+  { label: '喹诺酮过敏', value: '喹诺酮过敏' },
+];
+
 const PrescriptionPage: React.FC = () => {
-  const [data, setData] = useState(prescriptions);
+  const [data, setData] = useState<Prescription[]>(prescriptions);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isRegisterOpen, setIsRegisterOpen] = useState(false);
   const [currentPrescription, setCurrentPrescription] = useState<Prescription | null>(null);
   const [form] = Form.useForm();
   const [registerForm] = Form.useForm();
-  const [drugs, setDrugs] = useState<any[]>([]);
+  const [drugs, setDrugs] = useState<PrescriptionDrug[]>([]);
+  const [allergies, setAllergies] = useState<string[]>([]);
+  const [selectedMemberId, setSelectedMemberId] = useState<string>('');
+  const [previewWarnings, setPreviewWarnings] = useState<WarningItem[]>([]);
 
   const statusMap: Record<string, { color: string; text: string }> = {
     pending: { color: 'orange', text: '待审核' },
@@ -48,6 +63,27 @@ const PrescriptionPage: React.FC = () => {
   const getWarningIcon = (type: WarningItem['type'], level: WarningItem['level']) => {
     if (level === 'error') return <AlertOctagon size={16} className="text-red-500" />;
     return <AlertTriangle size={16} className="text-orange-500" />;
+  };
+
+  const selectedMember = useMemo(() => {
+    return members.find((m) => m.id === selectedMemberId);
+  }, [selectedMemberId]);
+
+  const purchaseHistory = useMemo(() => {
+    return selectedMember?.purchaseRecords || [];
+  }, [selectedMember]);
+
+  const handleRunReview = () => {
+    const validDrugs = drugs.filter((d) => d.drugName.trim());
+    const warnings = runFullDrugReview(validDrugs, purchaseHistory, allergies);
+    setPreviewWarnings(warnings);
+    if (warnings.length === 0) {
+      message.info('智能审查通过，未发现用药风险');
+    } else {
+      const errorCount = warnings.filter((w) => w.level === 'error').length;
+      const warningCount = warnings.filter((w) => w.level === 'warning').length;
+      message.warning(`发现 ${errorCount} 项禁忌错误，${warningCount} 项剂量警告`);
+    }
   };
 
   const columns = [
@@ -90,7 +126,7 @@ const PrescriptionPage: React.FC = () => {
     {
       title: '预警',
       key: 'warnings',
-      width: 80,
+      width: 100,
       render: (_: any, record: Prescription) => {
         const errorCount = record.warnings.filter((w) => w.level === 'error').length;
         const warningCount = record.warnings.filter((w) => w.level === 'warning').length;
@@ -184,12 +220,17 @@ const PrescriptionPage: React.FC = () => {
   };
 
   const handleReject = (record: Prescription) => {
+    let rejectReason = '';
     Modal.confirm({
       title: '驳回处方',
       content: (
         <Form>
           <Form.Item label="驳回原因" name="rejectReason">
-            <TextArea rows={3} placeholder="请输入驳回原因" />
+            <TextArea
+              rows={3}
+              placeholder="请输入驳回原因"
+              onChange={(e) => (rejectReason = e.target.value)}
+            />
           </Form.Item>
         </Form>
       ),
@@ -197,7 +238,13 @@ const PrescriptionPage: React.FC = () => {
         setData((prev) =>
           prev.map((p) =>
             p.id === record.id
-              ? { ...p, status: 'rejected' as const, auditor: '当前药师', auditTime: new Date().toLocaleString() }
+              ? {
+                  ...p,
+                  status: 'rejected' as const,
+                  auditor: '当前药师',
+                  auditTime: new Date().toLocaleString(),
+                  rejectReason,
+                }
               : p
           )
         );
@@ -207,7 +254,7 @@ const PrescriptionPage: React.FC = () => {
   };
 
   const handleAddDrug = () => {
-    const newDrug = {
+    const newDrug: PrescriptionDrug = {
       id: Date.now().toString(),
       drugName: '',
       spec: '',
@@ -221,21 +268,42 @@ const PrescriptionPage: React.FC = () => {
 
   const handleRegisterSubmit = () => {
     registerForm.validateFields().then((values) => {
+      const validDrugs = drugs.filter((d) => d.drugName.trim());
+      if (validDrugs.length === 0) {
+        message.error('请至少添加一种药品');
+        return;
+      }
+
+      const warnings = runFullDrugReview(validDrugs, purchaseHistory, allergies);
+
       const newPrescription: Prescription = {
         id: `RX${Date.now().toString().slice(-8)}`,
         ...values,
-        drugs: drugs.filter((d) => d.drugName),
+        drugs: validDrugs,
         doctor: '当前医生',
         createTime: new Date().toLocaleString(),
         status: 'pending',
-        warnings: [],
+        warnings,
       };
       setData([newPrescription, ...data]);
       setIsRegisterOpen(false);
       registerForm.resetFields();
       setDrugs([]);
-      message.success('处方登记成功');
+      setAllergies([]);
+      setSelectedMemberId('');
+      setPreviewWarnings([]);
+      message.success('处方登记成功，已自动完成智能用药审查');
     });
+  };
+
+  const handleMemberChange = (memberId: string) => {
+    setSelectedMemberId(memberId);
+    const member = members.find((m) => m.id === memberId);
+    if (member) {
+      registerForm.setFieldsValue({
+        patientName: member.name,
+      });
+    }
   };
 
   return (
@@ -297,6 +365,14 @@ const PrescriptionPage: React.FC = () => {
                   />
                 }
                 type={currentPrescription.warnings.some((w) => w.level === 'error') ? 'error' : 'warning'}
+                showIcon
+              />
+            )}
+            {currentPrescription.warnings.length === 0 && (
+              <Alert
+                message="智能审查通过"
+                description="未发现用药禁忌、重复用药或剂量问题"
+                type="success"
                 showIcon
               />
             )}
@@ -388,13 +464,31 @@ const PrescriptionPage: React.FC = () => {
       <Modal
         title="登记处方"
         open={isRegisterOpen}
-        onCancel={() => setIsRegisterOpen(false)}
+        onCancel={() => {
+          setIsRegisterOpen(false);
+          setPreviewWarnings([]);
+        }}
         onOk={handleRegisterSubmit}
         width={800}
         okText="提交审核"
       >
         <Form form={registerForm} layout="vertical">
           <Row gutter={16}>
+            <Col span={12}>
+              <Form.Item label="关联会员(可选)">
+                <Select
+                  placeholder="选择会员以获取购药历史"
+                  allowClear
+                  onChange={handleMemberChange}
+                >
+                  {members.map((m) => (
+                    <Option key={m.id} value={m.id}>
+                      {m.name} - {m.phone}
+                    </Option>
+                  ))}
+                </Select>
+              </Form.Item>
+            </Col>
             <Col span={12}>
               <Form.Item
                 label="患者姓名"
@@ -425,6 +519,15 @@ const PrescriptionPage: React.FC = () => {
                 </Select>
               </Form.Item>
             </Col>
+            <Col span={12}>
+              <Form.Item label="过敏史">
+                <Checkbox.Group
+                  options={allergyOptions}
+                  value={allergies}
+                  onChange={(v) => setAllergies(v as string[])}
+                />
+              </Form.Item>
+            </Col>
           </Row>
           <Form.Item
             label="诊断"
@@ -436,10 +539,46 @@ const PrescriptionPage: React.FC = () => {
 
           <div className="mb-2 flex justify-between items-center">
             <span className="font-medium">药品清单</span>
-            <Button type="dashed" size="small" onClick={handleAddDrug}>
-              + 添加药品
-            </Button>
+            <Space>
+              <Button
+                type="dashed"
+                size="small"
+                icon={<RefreshCw size={12} />}
+                onClick={handleRunReview}
+              >
+                预审查
+              </Button>
+              <Button type="dashed" size="small" onClick={handleAddDrug}>
+                + 添加药品
+              </Button>
+            </Space>
           </div>
+
+          {previewWarnings.length > 0 && (
+            <Alert
+              message="预审查结果"
+              description={
+                <List
+                  size="small"
+                  dataSource={previewWarnings}
+                  renderItem={(item) => (
+                    <List.Item className="px-0 py-1">
+                      <div className="flex items-start gap-2">
+                        {getWarningIcon(item.type, item.level)}
+                        <span className={item.level === 'error' ? 'text-red-600' : 'text-orange-600'}>
+                          {item.message}
+                        </span>
+                      </div>
+                    </List.Item>
+                  )}
+                />
+              }
+              type={previewWarnings.some((w) => w.level === 'error') ? 'error' : 'warning'}
+              showIcon
+              className="mb-3"
+            />
+          )}
+
           {drugs.length === 0 && (
             <div className="text-center py-8 text-gray-400 border border-dashed border-gray-200 rounded-lg mb-4">
               请点击上方按钮添加药品
@@ -472,7 +611,7 @@ const PrescriptionPage: React.FC = () => {
                 </Col>
                 <Col span={4}>
                   <Input
-                    placeholder="剂量"
+                    placeholder="剂量如100mg"
                     value={drug.dosage}
                     onChange={(e) => {
                       const newDrugs = [...drugs];

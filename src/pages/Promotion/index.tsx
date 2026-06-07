@@ -16,7 +16,8 @@ import {
   Col,
   List,
   Alert,
-  Switch,
+  Checkbox,
+  Tooltip,
 } from 'antd';
 import {
   Plus,
@@ -26,20 +27,27 @@ import {
   Eye,
   Edit,
   AlertTriangle,
+  Ban,
+  ShoppingCart,
 } from 'lucide-react';
-import { promotions, promotionTypeOptions } from '@/mock/promotion';
-import type { Promotion } from '@/types';
+import { promotions as initialPromotions, promotionTypeOptions } from '@/mock/promotion';
+import { selectableProducts } from '@/mock/products';
+import type { Promotion, PromotionProduct } from '@/types';
+import type { SelectableProduct } from '@/mock/products';
 
 const { Option } = Select;
 const { RangePicker } = DatePicker;
 
 const PromotionPage: React.FC = () => {
-  const [data, setData] = useState(promotions);
+  const [data, setData] = useState<Promotion[]>(initialPromotions);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [isDetailOpen, setIsDetailOpen] = useState(false);
+  const [isProductSelectOpen, setIsProductSelectOpen] = useState(false);
   const [currentPromotion, setCurrentPromotion] = useState<Promotion | null>(null);
   const [createForm] = Form.useForm();
   const [promotionType, setPromotionType] = useState<'discount' | 'fullReduce' | 'buyGift'>('discount');
+  const [selectedProducts, setSelectedProducts] = useState<PromotionProduct[]>([]);
+  const [tempSelectedIds, setTempSelectedIds] = useState<string[]>([]);
 
   const statusMap: Record<string, { color: string; text: string }> = {
     draft: { color: 'default', text: '草稿' },
@@ -52,6 +60,10 @@ const PromotionPage: React.FC = () => {
     fullReduce: <TagIcon size={16} />,
     buyGift: <Gift size={16} />,
   };
+
+  const nonRxProducts = selectableProducts.filter((p) => !p.isRx);
+  const rxProductsInPromotion = (products: PromotionProduct[]) =>
+    products.filter((p) => p.isRx);
 
   const columns = [
     {
@@ -85,10 +97,22 @@ const PromotionPage: React.FC = () => {
     {
       title: '参与商品',
       key: 'products',
-      width: 100,
-      render: (_: any, record: Promotion) => (
-        <Tag color="blue">{record.products.length}种</Tag>
-      ),
+      width: 120,
+      render: (_: any, record: Promotion) => {
+        const rxCount = rxProductsInPromotion(record.products).length;
+        return (
+          <div>
+            <Tag color="blue">{record.products.length}种</Tag>
+            {rxCount > 0 && (
+              <Tooltip title="包含处方药，违反促销规定">
+                <Tag color="red" icon={<Ban size={10} />}>
+                  {rxCount}种违规
+                </Tag>
+              </Tooltip>
+            )}
+          </div>
+        );
+      },
     },
     {
       title: '销售额',
@@ -104,9 +128,7 @@ const PromotionPage: React.FC = () => {
       title: '订单数',
       key: 'orders',
       width: 100,
-      render: (_: any, record: Promotion) => (
-        <span>{record.totalOrders || '-'}</span>
-      ),
+      render: (_: any, record: Promotion) => <span>{record.totalOrders || '-'}</span>,
     },
     {
       title: '状态',
@@ -125,7 +147,12 @@ const PromotionPage: React.FC = () => {
       width: 180,
       render: (_: any, record: Promotion) => (
         <Space size="small">
-          <Button type="link" size="small" icon={<Eye size={14} />} onClick={() => handleViewDetail(record)}>
+          <Button
+            type="link"
+            size="small"
+            icon={<Eye size={14} />}
+            onClick={() => handleViewDetail(record)}
+          >
             详情
           </Button>
           <Button type="link" size="small" icon={<Edit size={14} />}>
@@ -137,12 +164,49 @@ const PromotionPage: React.FC = () => {
   ];
 
   const handleViewDetail = (record: Promotion) => {
-    setCurrentPromotion(record);
+    const freshRecord = data.find((p) => p.id === record.id);
+    setCurrentPromotion(freshRecord || record);
     setIsDetailOpen(true);
+  };
+
+  const handleOpenProductSelect = () => {
+    setTempSelectedIds(selectedProducts.map((p) => p.id));
+    setIsProductSelectOpen(true);
+  };
+
+  const handleConfirmProducts = () => {
+    const products = tempSelectedIds
+      .map((id) => selectableProducts.find((p) => p.id === id))
+      .filter(Boolean)
+      .map((p) => ({
+        id: p!.id,
+        drugName: p!.drugName,
+        spec: p!.spec,
+        originalPrice: p!.originalPrice,
+        promotionPrice:
+          promotionType === 'discount'
+            ? Math.round(p!.originalPrice * 0.85 * 100) / 100
+            : p!.originalPrice,
+        isRx: p!.isRx,
+      }));
+    setSelectedProducts(products);
+    setIsProductSelectOpen(false);
+    message.success(`已选择 ${products.length} 种商品`);
   };
 
   const handleCreateSubmit = () => {
     createForm.validateFields().then((values) => {
+      if (selectedProducts.length === 0) {
+        message.error('请至少选择一种参与商品');
+        return;
+      }
+
+      const rxCount = selectedProducts.filter((p) => p.isRx).length;
+      if (rxCount > 0) {
+        message.error('处方药不能参与促销活动，请移除后重试');
+        return;
+      }
+
       const newPromotion: Promotion = {
         id: `PROM${Date.now().toString().slice(-6)}`,
         name: values.name,
@@ -150,7 +214,7 @@ const PromotionPage: React.FC = () => {
         typeName: promotionTypeOptions.find((t) => t.value === promotionType)?.label || '',
         startTime: values.time[0].format('YYYY-MM-DD'),
         endTime: values.time[1].format('YYYY-MM-DD'),
-        products: [],
+        products: selectedProducts,
         status: 'draft',
         ...(promotionType === 'discount' && { discountValue: values.discountValue }),
         ...(promotionType === 'fullReduce' && {
@@ -162,11 +226,22 @@ const PromotionPage: React.FC = () => {
           giftQuantity: values.giftQuantity,
         }),
       };
+
       setData([newPromotion, ...data]);
       setIsCreateOpen(false);
       createForm.resetFields();
+      setSelectedProducts([]);
       message.success('活动创建成功');
     });
+  };
+
+  const calculatePromotionPrice = (originalPrice: number): number => {
+    switch (promotionType) {
+      case 'discount':
+        return Math.round(originalPrice * 0.85 * 100) / 100;
+      default:
+        return originalPrice;
+    }
   };
 
   return (
@@ -175,7 +250,11 @@ const PromotionPage: React.FC = () => {
         className="border-0 shadow-sm"
         title="促销活动管理"
         extra={
-          <Button type="primary" icon={<Plus size={14} />} onClick={() => setIsCreateOpen(true)}>
+          <Button
+            type="primary"
+            icon={<Plus size={14} />}
+            onClick={() => setIsCreateOpen(true)}
+          >
             创建活动
           </Button>
         }
@@ -209,10 +288,14 @@ const PromotionPage: React.FC = () => {
       <Modal
         title="创建促销活动"
         open={isCreateOpen}
-        onCancel={() => setIsCreateOpen(false)}
+        onCancel={() => {
+          setIsCreateOpen(false);
+          setSelectedProducts([]);
+        }}
         onOk={handleCreateSubmit}
-        width={600}
+        width={700}
         okText="创建活动"
+        destroyOnClose
       >
         <Form form={createForm} layout="vertical">
           <Form.Item
@@ -228,7 +311,9 @@ const PromotionPage: React.FC = () => {
             rules={[{ required: true, message: '请选择活动类型' }]}
           >
             <Select
-              onChange={(value) => setPromotionType(value as 'discount' | 'fullReduce' | 'buyGift')}
+              onChange={(value) =>
+                setPromotionType(value as 'discount' | 'fullReduce' | 'buyGift')
+              }
               defaultValue="discount"
             >
               {promotionTypeOptions.map((opt) => (
@@ -244,8 +329,15 @@ const PromotionPage: React.FC = () => {
               label="折扣比例(%)"
               name="discountValue"
               rules={[{ required: true, message: '请输入折扣比例' }]}
+              initialValue={8.5}
             >
-              <InputNumber min={1} max={9.9} step={0.1} style={{ width: '100%' }} placeholder="例如：8.5 表示85折" />
+              <InputNumber
+                min={1}
+                max={9.9}
+                step={0.1}
+                style={{ width: '100%' }}
+                placeholder="例如：8.5 表示85折"
+              />
             </Form.Item>
           )}
 
@@ -257,7 +349,12 @@ const PromotionPage: React.FC = () => {
                   name="fullAmount"
                   rules={[{ required: true, message: '请输入满额' }]}
                 >
-                  <InputNumber min={0} style={{ width: '100%' }} prefix="¥" placeholder="满多少元" />
+                  <InputNumber
+                    min={0}
+                    style={{ width: '100%' }}
+                    prefix="¥"
+                    placeholder="满多少元"
+                  />
                 </Form.Item>
               </Col>
               <Col span={12}>
@@ -266,7 +363,12 @@ const PromotionPage: React.FC = () => {
                   name="reduceAmount"
                   rules={[{ required: true, message: '请输入减额' }]}
                 >
-                  <InputNumber min={0} style={{ width: '100%' }} prefix="¥" placeholder="减多少元" />
+                  <InputNumber
+                    min={0}
+                    style={{ width: '100%' }}
+                    prefix="¥"
+                    placeholder="减多少元"
+                  />
                 </Form.Item>
               </Col>
             </Row>
@@ -309,8 +411,107 @@ const PromotionPage: React.FC = () => {
             type="warning"
             showIcon
             icon={<AlertTriangle size={16} />}
+            className="mb-4"
           />
+
+          <Form.Item label="参与商品">
+            <Button type="dashed" block onClick={handleOpenProductSelect}>
+              <ShoppingCart size={14} className="mr-2" />
+              {selectedProducts.length > 0
+                ? `已选择 ${selectedProducts.length} 种商品`
+                : '点击选择参与商品'}
+            </Button>
+          </Form.Item>
+
+          {selectedProducts.length > 0 && (
+            <List
+              size="small"
+              bordered
+              dataSource={selectedProducts}
+              renderItem={(product) => (
+                <List.Item className="px-3 py-2">
+                  <div className="flex justify-between w-full items-center">
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium">{product.drugName}</span>
+                      <span className="text-gray-500 text-sm">{product.spec}</span>
+                      {product.isRx && (
+                        <Tag color="red" icon={<Ban size={10} />}>
+                          处方药 违规
+                        </Tag>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-gray-400 line-through text-sm">
+                        ¥{product.originalPrice}
+                      </span>
+                      <span className="text-orange-500 font-bold">
+                        ¥{calculatePromotionPrice(product.originalPrice)}
+                      </span>
+                    </div>
+                  </div>
+                </List.Item>
+              )}
+            />
+          )}
         </Form>
+      </Modal>
+
+      <Modal
+        title="选择参与商品"
+        open={isProductSelectOpen}
+        onCancel={() => setIsProductSelectOpen(false)}
+        onOk={handleConfirmProducts}
+        width={800}
+        okText="确认选择"
+        destroyOnClose
+      >
+        <Alert
+          message="处方药限制提示"
+          description="处方药已被系统禁用，无法参与促销活动"
+          type="warning"
+          showIcon
+          className="mb-4"
+        />
+        <div className="max-h-96 overflow-y-auto">
+          <Checkbox.Group value={tempSelectedIds} onChange={(v) => setTempSelectedIds(v as string[])}>
+            <List
+              dataSource={selectableProducts}
+              renderItem={(product: SelectableProduct) => (
+                <List.Item className="px-3 py-2 hover:bg-gray-50">
+                  <div className="flex justify-between w-full items-center">
+                    <div className="flex items-center gap-3">
+                      <Checkbox
+                        value={product.id}
+                        disabled={product.isRx}
+                        checked={tempSelectedIds.includes(product.id)}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setTempSelectedIds([...tempSelectedIds, product.id]);
+                          } else {
+                            setTempSelectedIds(tempSelectedIds.filter((id) => id !== product.id));
+                          }
+                        }}
+                      />
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium">{product.drugName}</span>
+                          <span className="text-gray-500 text-sm">{product.spec}</span>
+                          {product.isRx && (
+                            <Tag color="red" icon={<Ban size={10} />}>
+                              处方药
+                            </Tag>
+                          )}
+                        </div>
+                        <span className="text-gray-400 text-xs">{product.category}</span>
+                      </div>
+                    </div>
+                    <span className="text-gray-600">¥{product.originalPrice}</span>
+                  </div>
+                </List.Item>
+              )}
+            />
+          </Checkbox.Group>
+        </div>
       </Modal>
 
       <Modal
@@ -319,6 +520,7 @@ const PromotionPage: React.FC = () => {
         onCancel={() => setIsDetailOpen(false)}
         width={700}
         footer={null}
+        destroyOnClose
       >
         {currentPromotion && (
           <div className="space-y-4">
@@ -334,6 +536,16 @@ const PromotionPage: React.FC = () => {
                 活动时间：{currentPromotion.startTime} ~ {currentPromotion.endTime}
               </p>
             </div>
+
+            {rxProductsInPromotion(currentPromotion.products).length > 0 && (
+              <Alert
+                message="违规商品警告"
+                description={`活动包含 ${rxProductsInPromotion(currentPromotion.products).length} 种处方药，处方药不允许参与促销，请及时移除`}
+                type="error"
+                showIcon
+                icon={<Ban size={16} />}
+              />
+            )}
 
             <Row gutter={16}>
               <Col span={8}>
@@ -373,19 +585,29 @@ const PromotionPage: React.FC = () => {
                   bordered
                   dataSource={currentPromotion.products}
                   renderItem={(product) => (
-                    <List.Item className="flex justify-between items-center">
-                      <div className="flex items-center gap-2">
-                        <span className="font-medium">{product.drugName}</span>
-                        <span className="text-gray-500 text-sm">{product.spec}</span>
-                        {product.isRx && <Tag color="red">Rx 处方药</Tag>}
-                      </div>
-                      <div className="flex items-center gap-3">
-                        <span className="text-gray-400 line-through">
-                          ¥{product.originalPrice}
-                        </span>
-                        <span className="text-orange-500 font-bold">
-                          ¥{product.promotionPrice}
-                        </span>
+                    <List.Item className="px-4 py-3">
+                      <div className="flex justify-between w-full items-center">
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium">{product.drugName}</span>
+                          <span className="text-gray-500 text-sm">{product.spec}</span>
+                          {product.isRx && (
+                            <Tag color="red" icon={<Ban size={10} />}>
+                              处方药 禁止优惠
+                            </Tag>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <span className="text-gray-400 line-through">
+                            ¥{product.originalPrice}
+                          </span>
+                          {product.isRx ? (
+                            <span className="text-red-500 font-bold">不参与优惠</span>
+                          ) : (
+                            <span className="text-orange-500 font-bold">
+                              ¥{product.promotionPrice}
+                            </span>
+                          )}
+                        </div>
                       </div>
                     </List.Item>
                   )}
