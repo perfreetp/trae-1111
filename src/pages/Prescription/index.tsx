@@ -16,6 +16,7 @@ import {
   List,
   Alert,
   Checkbox,
+  AutoComplete,
 } from 'antd';
 import {
   Plus,
@@ -25,11 +26,16 @@ import {
   AlertTriangle,
   AlertOctagon,
   RefreshCw,
+  Pill,
+  X,
+  Search,
 } from 'lucide-react';
-import { prescriptions } from '@/mock/prescription';
+import { prescriptions as initialPrescriptions } from '@/mock/prescription';
 import { members } from '@/mock/member';
-import type { Prescription, WarningItem, PrescriptionDrug } from '@/types';
-import { runFullDrugReview } from '@/utils/drugReview';
+import { drugLibrary, searchDrugs } from '@/mock/drugLibrary';
+import type { Prescription, WarningItem, PrescriptionDrug, Member } from '@/types';
+import { runFullDrugReview, getRiskLevel, getRiskLevelInfo, type ReviewResult } from '@/utils/drugReview';
+import type { DrugLibraryItem } from '@/mock/drugLibrary';
 
 const { TextArea } = Input;
 const { Option } = Select;
@@ -43,16 +49,15 @@ const allergyOptions = [
 ];
 
 const PrescriptionPage: React.FC = () => {
-  const [data, setData] = useState<Prescription[]>(prescriptions);
-  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [data, setData] = useState<Prescription[]>(initialPrescriptions);
+  const [isDetailOpen, setIsDetailOpen] = useState(false);
   const [isRegisterOpen, setIsRegisterOpen] = useState(false);
   const [currentPrescription, setCurrentPrescription] = useState<Prescription | null>(null);
-  const [form] = Form.useForm();
   const [registerForm] = Form.useForm();
   const [drugs, setDrugs] = useState<PrescriptionDrug[]>([]);
   const [allergies, setAllergies] = useState<string[]>([]);
   const [selectedMemberId, setSelectedMemberId] = useState<string>('');
-  const [previewWarnings, setPreviewWarnings] = useState<WarningItem[]>([]);
+  const [previewWarnings, setPreviewWarnings] = useState<ReviewResult[]>([]);
 
   const statusMap: Record<string, { color: string; text: string }> = {
     pending: { color: 'orange', text: '待审核' },
@@ -73,17 +78,86 @@ const PrescriptionPage: React.FC = () => {
     return selectedMember?.purchaseRecords || [];
   }, [selectedMember]);
 
+  const handleAddDrugFromLibrary = (drugItem: DrugLibraryItem) => {
+    const newDrug: PrescriptionDrug = {
+      id: Date.now().toString(),
+      drugName: drugItem.drugName,
+      spec: drugItem.spec,
+      dosage: drugItem.commonDosage,
+      frequency: drugItem.commonFrequency,
+      quantity: 1,
+      isRx: drugItem.isRx,
+    };
+    setDrugs([...drugs, newDrug]);
+  };
+
+  const handleRemoveDrug = (drugId: string) => {
+    setDrugs(drugs.filter((d) => d.id !== drugId));
+  };
+
+  const handleUpdateDrug = (drugId: string, field: keyof PrescriptionDrug, value: any) => {
+    setDrugs(drugs.map((d) => (d.id === drugId ? { ...d, [field]: value } : d)));
+  };
+
   const handleRunReview = () => {
     const validDrugs = drugs.filter((d) => d.drugName.trim());
+    if (validDrugs.length === 0) {
+      message.warning('请先添加药品');
+      return;
+    }
     const warnings = runFullDrugReview(validDrugs, purchaseHistory, allergies);
     setPreviewWarnings(warnings);
     if (warnings.length === 0) {
-      message.info('智能审查通过，未发现用药风险');
+      message.success('智能审查通过，未发现用药风险');
     } else {
       const errorCount = warnings.filter((w) => w.level === 'error').length;
       const warningCount = warnings.filter((w) => w.level === 'warning').length;
-      message.warning(`发现 ${errorCount} 项禁忌错误，${warningCount} 项剂量警告`);
+      message.warning(`发现 ${errorCount} 项严重禁忌，${warningCount} 项提醒`);
     }
+  };
+
+  const handleRegisterSubmit = () => {
+    registerForm.validateFields().then((values) => {
+      const validDrugs = drugs.filter((d) => d.drugName.trim());
+      if (validDrugs.length === 0) {
+        message.warning('请至少添加一种药品');
+        return;
+      }
+
+      const warnings = runFullDrugReview(validDrugs, purchaseHistory, allergies);
+      const riskLevel = getRiskLevel(warnings);
+
+      const newPrescription: Prescription = {
+        id: `RX${Date.now().toString().slice(-6)}`,
+        patientName: values.patientName,
+        patientAge: values.patientAge,
+        patientGender: values.patientGender,
+        diagnosis: values.diagnosis,
+        drugs: validDrugs,
+        doctor: values.doctor,
+        createTime: new Date().toISOString().slice(0, 10),
+        status: 'pending',
+        warnings: warnings as WarningItem[],
+        riskLevel,
+        memberId: selectedMemberId || undefined,
+        allergies: allergies.length > 0 ? allergies : undefined,
+      };
+
+      setData([newPrescription, ...data]);
+      setIsRegisterOpen(false);
+      registerForm.resetFields();
+      setDrugs([]);
+      setAllergies([]);
+      setSelectedMemberId('');
+      setPreviewWarnings([]);
+      message.success('处方登记成功');
+    });
+  };
+
+  const handleViewDetail = (record: Prescription) => {
+    const freshRecord = data.find((p) => p.id === record.id);
+    setCurrentPrescription(freshRecord || record);
+    setIsDetailOpen(true);
   };
 
   const columns = [
@@ -101,7 +175,7 @@ const PrescriptionPage: React.FC = () => {
     },
     {
       title: '年龄/性别',
-      key: 'ageGender',
+      key: 'age',
       width: 100,
       render: (_: any, record: Prescription) => (
         <span>
@@ -113,6 +187,7 @@ const PrescriptionPage: React.FC = () => {
       title: '诊断',
       dataIndex: 'diagnosis',
       key: 'diagnosis',
+      width: 150,
       ellipsis: true,
     },
     {
@@ -124,51 +199,56 @@ const PrescriptionPage: React.FC = () => {
       ),
     },
     {
+      title: '风险等级',
+      key: 'riskLevel',
+      width: 110,
+      render: (_: any, record: Prescription) => {
+        const level = record.riskLevel || getRiskLevel(record.warnings as ReviewResult[]);
+        const info = getRiskLevelInfo(level);
+        return <Tag color={info.color}>{info.icon} {info.text}</Tag>;
+      },
+    },
+    {
       title: '预警',
       key: 'warnings',
       width: 100,
       render: (_: any, record: Prescription) => {
+        if (record.warnings.length === 0) {
+          return <Tag color="green">无</Tag>;
+        }
         const errorCount = record.warnings.filter((w) => w.level === 'error').length;
         const warningCount = record.warnings.filter((w) => w.level === 'warning').length;
-        if (errorCount > 0) {
-          return <Tag color="red">{errorCount}项错误</Tag>;
-        }
-        if (warningCount > 0) {
-          return <Tag color="orange">{warningCount}项警告</Tag>;
-        }
-        return <Tag color="green">正常</Tag>;
+        return (
+          <Space size={4}>
+            {errorCount > 0 && <Tag color="red">禁忌{errorCount}</Tag>}
+            {warningCount > 0 && <Tag color="orange">提醒{warningCount}</Tag>}
+          </Space>
+        );
       },
     },
     {
       title: '状态',
+      dataIndex: 'status',
       key: 'status',
       width: 100,
-      render: (_: any, record: Prescription) => (
-        <Tag color={statusMap[record.status].color}>
-          {statusMap[record.status].text}
-        </Tag>
+      render: (status: string) => (
+        <Tag color={statusMap[status]?.color}>{statusMap[status]?.text}</Tag>
       ),
-    },
-    {
-      title: '登记时间',
-      dataIndex: 'createTime',
-      key: 'createTime',
-      width: 160,
     },
     {
       title: '操作',
       key: 'action',
-      width: 180,
       fixed: 'right' as const,
+      width: 150,
       render: (_: any, record: Prescription) => (
         <Space size="small">
           <Button
             type="link"
             size="small"
             icon={<Eye size={14} />}
-            onClick={() => handleView(record)}
+            onClick={() => handleViewDetail(record)}
           >
-            查看
+            详情
           </Button>
           {record.status === 'pending' && (
             <>
@@ -176,17 +256,15 @@ const PrescriptionPage: React.FC = () => {
                 type="link"
                 size="small"
                 icon={<CheckCircle size={14} />}
-                onClick={() => handleApprove(record)}
-                className="text-green-600"
+                className="text-green-500"
               >
                 通过
               </Button>
               <Button
                 type="link"
                 size="small"
-                danger
                 icon={<XCircle size={14} />}
-                onClick={() => handleReject(record)}
+                className="text-red-500"
               >
                 驳回
               </Button>
@@ -197,299 +275,63 @@ const PrescriptionPage: React.FC = () => {
     },
   ];
 
-  const handleView = (record: Prescription) => {
-    setCurrentPrescription(record);
-    setIsModalOpen(true);
-  };
-
-  const handleApprove = (record: Prescription) => {
-    Modal.confirm({
-      title: '确认审核通过',
-      content: `确定要通过处方 ${record.id} 的审核吗？`,
-      onOk: () => {
-        setData((prev) =>
-          prev.map((p) =>
-            p.id === record.id
-              ? { ...p, status: 'approved' as const, auditor: '当前药师', auditTime: new Date().toLocaleString() }
-              : p
-          )
-        );
-        message.success('审核通过');
-      },
-    });
-  };
-
-  const handleReject = (record: Prescription) => {
-    let rejectReason = '';
-    Modal.confirm({
-      title: '驳回处方',
-      content: (
-        <Form>
-          <Form.Item label="驳回原因" name="rejectReason">
-            <TextArea
-              rows={3}
-              placeholder="请输入驳回原因"
-              onChange={(e) => (rejectReason = e.target.value)}
-            />
-          </Form.Item>
-        </Form>
-      ),
-      onOk: () => {
-        setData((prev) =>
-          prev.map((p) =>
-            p.id === record.id
-              ? {
-                  ...p,
-                  status: 'rejected' as const,
-                  auditor: '当前药师',
-                  auditTime: new Date().toLocaleString(),
-                  rejectReason,
-                }
-              : p
-          )
-        );
-        message.success('已驳回');
-      },
-    });
-  };
-
-  const handleAddDrug = () => {
-    const newDrug: PrescriptionDrug = {
-      id: Date.now().toString(),
-      drugName: '',
-      spec: '',
-      dosage: '',
-      frequency: '每日1次',
-      quantity: 1,
-      isRx: true,
-    };
-    setDrugs([...drugs, newDrug]);
-  };
-
-  const handleRegisterSubmit = () => {
-    registerForm.validateFields().then((values) => {
-      const validDrugs = drugs.filter((d) => d.drugName.trim());
-      if (validDrugs.length === 0) {
-        message.error('请至少添加一种药品');
-        return;
-      }
-
-      const warnings = runFullDrugReview(validDrugs, purchaseHistory, allergies);
-
-      const newPrescription: Prescription = {
-        id: `RX${Date.now().toString().slice(-8)}`,
-        ...values,
-        drugs: validDrugs,
-        doctor: '当前医生',
-        createTime: new Date().toLocaleString(),
-        status: 'pending',
-        warnings,
-      };
-      setData([newPrescription, ...data]);
-      setIsRegisterOpen(false);
-      registerForm.resetFields();
-      setDrugs([]);
-      setAllergies([]);
-      setSelectedMemberId('');
-      setPreviewWarnings([]);
-      message.success('处方登记成功，已自动完成智能用药审查');
-    });
-  };
-
-  const handleMemberChange = (memberId: string) => {
-    setSelectedMemberId(memberId);
-    const member = members.find((m) => m.id === memberId);
-    if (member) {
-      registerForm.setFieldsValue({
-        patientName: member.name,
-      });
-    }
-  };
-
   return (
     <div className="space-y-6">
-      <Card className="border-0 shadow-sm" title="处方审核工作台">
-        <div className="mb-4 flex justify-between items-center">
-          <Space>
-            <Select defaultValue="all" style={{ width: 120 }} size="middle">
-              <Option value="all">全部状态</Option>
-              <Option value="pending">待审核</Option>
-              <Option value="approved">已通过</Option>
-              <Option value="rejected">已驳回</Option>
-            </Select>
-            <Input.Search placeholder="搜索患者姓名/处方号" style={{ width: 240 }} />
-          </Space>
+      <Card
+        className="border-0 shadow-sm"
+        title="处方审核"
+        extra={
           <Button
             type="primary"
-            icon={<Plus size={16} />}
+            icon={<Plus size={14} />}
             onClick={() => setIsRegisterOpen(true)}
           >
             登记处方
           </Button>
+        }
+      >
+        <div className="mb-4 flex gap-3">
+          <Select defaultValue="all" style={{ width: 140 }}>
+            <Option value="all">全部状态</Option>
+            <Option value="pending">待审核</Option>
+            <Option value="approved">已通过</Option>
+            <Option value="rejected">已驳回</Option>
+          </Select>
+          <Select defaultValue="all" style={{ width: 140 }}>
+            <Option value="all">全部风险</Option>
+            <Option value="high">高风险</Option>
+            <Option value="medium">中风险</Option>
+            <Option value="low">低风险</Option>
+          </Select>
+          <Input.Search placeholder="搜索患者姓名/处方号" style={{ width: 240 }} />
         </div>
         <Table
           columns={columns}
           dataSource={data}
           rowKey="id"
-          scroll={{ x: 1000 }}
+          scroll={{ x: 1100 }}
           pagination={{ pageSize: 8 }}
         />
       </Card>
 
       <Modal
-        title="处方详情"
-        open={isModalOpen}
-        onCancel={() => setIsModalOpen(false)}
-        width={700}
-        footer={null}
-      >
-        {currentPrescription && (
-          <div className="space-y-4">
-            {currentPrescription.warnings.length > 0 && (
-              <Alert
-                message="智能审查预警"
-                description={
-                  <List
-                    size="small"
-                    dataSource={currentPrescription.warnings}
-                    renderItem={(item) => (
-                      <List.Item className="px-0">
-                        <div className="flex items-start gap-2">
-                          {getWarningIcon(item.type, item.level)}
-                          <span className={item.level === 'error' ? 'text-red-600' : 'text-orange-600'}>
-                            {item.message}
-                          </span>
-                        </div>
-                      </List.Item>
-                    )}
-                  />
-                }
-                type={currentPrescription.warnings.some((w) => w.level === 'error') ? 'error' : 'warning'}
-                showIcon
-              />
-            )}
-            {currentPrescription.warnings.length === 0 && (
-              <Alert
-                message="智能审查通过"
-                description="未发现用药禁忌、重复用药或剂量问题"
-                type="success"
-                showIcon
-              />
-            )}
-
-            <div className="bg-gray-50 p-4 rounded-lg">
-              <Row gutter={16}>
-                <Col span={12}>
-                  <p className="text-gray-500 text-sm">处方编号</p>
-                  <p className="font-medium">{currentPrescription.id}</p>
-                </Col>
-                <Col span={12}>
-                  <p className="text-gray-500 text-sm">登记时间</p>
-                  <p className="font-medium">{currentPrescription.createTime}</p>
-                </Col>
-                <Col span={12}>
-                  <p className="text-gray-500 text-sm">患者姓名</p>
-                  <p className="font-medium">{currentPrescription.patientName}</p>
-                </Col>
-                <Col span={12}>
-                  <p className="text-gray-500 text-sm">年龄/性别</p>
-                  <p className="font-medium">
-                    {currentPrescription.patientAge}岁 / {currentPrescription.patientGender === 'male' ? '男' : '女'}
-                  </p>
-                </Col>
-                <Col span={24}>
-                  <p className="text-gray-500 text-sm">诊断</p>
-                  <p className="font-medium">{currentPrescription.diagnosis}</p>
-                </Col>
-              </Row>
-            </div>
-
-            <div>
-              <p className="text-gray-700 font-medium mb-2">药品清单</p>
-              <List
-                bordered
-                dataSource={currentPrescription.drugs}
-                renderItem={(drug) => (
-                  <List.Item className="flex justify-between">
-                    <div>
-                      <span className="font-medium">{drug.drugName}</span>
-                      <span className="text-gray-500 ml-2">{drug.spec}</span>
-                      {drug.isRx && <Tag color="red" className="ml-2">Rx</Tag>}
-                    </div>
-                    <span className="text-gray-600">
-                      {drug.dosage}，{drug.frequency} × {drug.quantity}盒
-                    </span>
-                  </List.Item>
-                )}
-              />
-            </div>
-
-            <Row gutter={16}>
-              <Col span={12}>
-                <p className="text-gray-500 text-sm">开方医生</p>
-                <p className="font-medium">{currentPrescription.doctor}</p>
-              </Col>
-              <Col span={12}>
-                <p className="text-gray-500 text-sm">状态</p>
-                <Tag color={statusMap[currentPrescription.status].color}>
-                  {statusMap[currentPrescription.status].text}
-                </Tag>
-              </Col>
-            </Row>
-
-            {currentPrescription.status !== 'pending' && (
-              <div className="bg-gray-50 p-4 rounded-lg">
-                <Row gutter={16}>
-                  <Col span={12}>
-                    <p className="text-gray-500 text-sm">审核药师</p>
-                    <p className="font-medium">{currentPrescription.auditor}</p>
-                  </Col>
-                  <Col span={12}>
-                    <p className="text-gray-500 text-sm">审核时间</p>
-                    <p className="font-medium">{currentPrescription.auditTime}</p>
-                  </Col>
-                  {currentPrescription.rejectReason && (
-                    <Col span={24}>
-                      <p className="text-gray-500 text-sm">驳回原因</p>
-                      <p className="font-medium text-red-600">{currentPrescription.rejectReason}</p>
-                    </Col>
-                  )}
-                </Row>
-              </div>
-            )}
-          </div>
-        )}
-      </Modal>
-
-      <Modal
-        title="登记处方"
+        title="登记新处方"
         open={isRegisterOpen}
         onCancel={() => {
           setIsRegisterOpen(false);
+          setDrugs([]);
+          setAllergies([]);
+          setSelectedMemberId('');
           setPreviewWarnings([]);
         }}
         onOk={handleRegisterSubmit}
-        width={800}
+        width={900}
         okText="提交审核"
+        destroyOnClose
       >
         <Form form={registerForm} layout="vertical">
           <Row gutter={16}>
-            <Col span={12}>
-              <Form.Item label="关联会员(可选)">
-                <Select
-                  placeholder="选择会员以获取购药历史"
-                  allowClear
-                  onChange={handleMemberChange}
-                >
-                  {members.map((m) => (
-                    <Option key={m.id} value={m.id}>
-                      {m.name} - {m.phone}
-                    </Option>
-                  ))}
-                </Select>
-              </Form.Item>
-            </Col>
-            <Col span={12}>
+            <Col span={8}>
               <Form.Item
                 label="患者姓名"
                 name="patientName"
@@ -498,155 +340,359 @@ const PrescriptionPage: React.FC = () => {
                 <Input placeholder="请输入患者姓名" />
               </Form.Item>
             </Col>
-            <Col span={6}>
+            <Col span={8}>
               <Form.Item
                 label="年龄"
                 name="patientAge"
                 rules={[{ required: true, message: '请输入年龄' }]}
               >
-                <InputNumber min={0} max={120} style={{ width: '100%' }} />
+                <InputNumber min={0} max={120} style={{ width: '100%' }} placeholder="岁" />
               </Form.Item>
             </Col>
-            <Col span={6}>
+            <Col span={8}>
               <Form.Item
                 label="性别"
                 name="patientGender"
                 rules={[{ required: true, message: '请选择性别' }]}
               >
-                <Select>
+                <Select placeholder="请选择">
                   <Option value="male">男</Option>
                   <Option value="female">女</Option>
                 </Select>
               </Form.Item>
             </Col>
+          </Row>
+          <Row gutter={16}>
             <Col span={12}>
-              <Form.Item label="过敏史">
-                <Checkbox.Group
-                  options={allergyOptions}
-                  value={allergies}
-                  onChange={(v) => setAllergies(v as string[])}
-                />
+              <Form.Item
+                label="诊断"
+                name="diagnosis"
+                rules={[{ required: true, message: '请输入诊断' }]}
+              >
+                <Input placeholder="如：上呼吸道感染" />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item
+                label="开具医生"
+                name="doctor"
+                rules={[{ required: true, message: '请输入医生姓名' }]}
+              >
+                <Input placeholder="请输入医生姓名" />
               </Form.Item>
             </Col>
           </Row>
-          <Form.Item
-            label="诊断"
-            name="diagnosis"
-            rules={[{ required: true, message: '请输入诊断' }]}
-          >
-            <Input placeholder="请输入诊断信息" />
+
+          <Form.Item label="关联会员（用于获取购药历史）">
+            <Select
+              allowClear
+              placeholder="选择关联会员（可选）"
+              value={selectedMemberId}
+              onChange={(value) => setSelectedMemberId(value)}
+              showSearch
+              optionFilterProp="children"
+            >
+              {members.map((m) => (
+                <Option key={m.id} value={m.id}>
+                  {m.name} - {m.phone}
+                </Option>
+              ))}
+            </Select>
           </Form.Item>
 
-          <div className="mb-2 flex justify-between items-center">
-            <span className="font-medium">药品清单</span>
-            <Space>
-              <Button
-                type="dashed"
-                size="small"
-                icon={<RefreshCw size={12} />}
-                onClick={handleRunReview}
-              >
-                预审查
-              </Button>
-              <Button type="dashed" size="small" onClick={handleAddDrug}>
-                + 添加药品
-              </Button>
-            </Space>
-          </div>
+          <Form.Item label="过敏史">
+            <Checkbox.Group
+              value={allergies}
+              onChange={(v) => setAllergies(v as string[])}
+            >
+              <Space wrap>
+                {allergyOptions.map((opt) => (
+                  <Checkbox key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </Checkbox>
+                ))}
+              </Space>
+            </Checkbox.Group>
+          </Form.Item>
 
-          {previewWarnings.length > 0 && (
-            <Alert
-              message="预审查结果"
-              description={
-                <List
+          <div className="mb-2">
+            <div className="flex justify-between items-center mb-2">
+              <label className="font-medium text-gray-700">处方药品</label>
+              <Space>
+                <Button
+                  type="primary"
                   size="small"
-                  dataSource={previewWarnings}
-                  renderItem={(item) => (
-                    <List.Item className="px-0 py-1">
-                      <div className="flex items-start gap-2">
-                        {getWarningIcon(item.type, item.level)}
-                        <span className={item.level === 'error' ? 'text-red-600' : 'text-orange-600'}>
-                          {item.message}
-                        </span>
-                      </div>
-                    </List.Item>
-                  )}
-                />
-              }
-              type={previewWarnings.some((w) => w.level === 'error') ? 'error' : 'warning'}
-              showIcon
-              className="mb-3"
-            />
-          )}
-
-          {drugs.length === 0 && (
-            <div className="text-center py-8 text-gray-400 border border-dashed border-gray-200 rounded-lg mb-4">
-              请点击上方按钮添加药品
+                  icon={<RefreshCw size={12} />}
+                  onClick={handleRunReview}
+                >
+                  预审查
+                </Button>
+              </Space>
             </div>
-          )}
-          {drugs.map((drug, index) => (
-            <div key={drug.id} className="p-3 bg-gray-50 rounded-lg mb-2">
-              <Row gutter={8} align="middle">
-                <Col span={8}>
-                  <Input
-                    placeholder="药品名称"
-                    value={drug.drugName}
-                    onChange={(e) => {
-                      const newDrugs = [...drugs];
-                      newDrugs[index].drugName = e.target.value;
-                      setDrugs(newDrugs);
-                    }}
+
+            <div className="mb-3">
+              <AutoComplete
+                placeholder="搜索药品名称快速添加（支持拼音、通用名）"
+                size="large"
+                style={{ width: '100%' }}
+                onSelect={(_, option) => {
+                  if (option.drug) {
+                    handleAddDrugFromLibrary(option.drug as DrugLibraryItem);
+                  }
+                }}
+                options={drugLibrary.map((drug) => ({
+                  value: drug.drugName,
+                  label: (
+                    <div className="flex justify-between items-center py-1">
+                      <div className="flex items-center gap-2">
+                        <Pill size={14} className={drug.isRx ? 'text-red-500' : 'text-green-500'} />
+                        <span className="font-medium">{drug.drugName}</span>
+                        <span className="text-gray-400 text-sm">{drug.spec}</span>
+                      </div>
+                      <span className="text-xs">
+                        {drug.isRx ? <Tag color="red">Rx</Tag> : <Tag color="green">OTC</Tag>}
+                      </span>
+                    </div>
+                  ),
+                  drug: drug,
+                }))}
+              >
+                <Input prefix={<Search size={16} className="text-gray-400" />} />
+              </AutoComplete>
+            </div>
+
+            {previewWarnings.length > 0 && (
+              <Alert
+                message="智能审查结果"
+                description={
+                  <List
+                    size="small"
+                    dataSource={previewWarnings}
+                    renderItem={(item) => (
+                      <List.Item className="px-0 py-1">
+                        <div className="flex flex-col gap-1 w-full">
+                          <div className="flex items-start gap-2">
+                            {getWarningIcon(item.type, item.level)}
+                            <span className={item.level === 'error' ? 'text-red-600' : 'text-orange-600'}>
+                              {item.message}
+                            </span>
+                          </div>
+                          {item.suggestion && (
+                            <div className="ml-6 text-sm text-blue-600 bg-blue-50 px-2 py-1 rounded">
+                              💡 {item.suggestion}
+                            </div>
+                          )}
+                        </div>
+                      </List.Item>
+                    )}
                   />
-                </Col>
-                <Col span={5}>
-                  <Input
-                    placeholder="规格"
-                    value={drug.spec}
-                    onChange={(e) => {
-                      const newDrugs = [...drugs];
-                      newDrugs[index].spec = e.target.value;
-                      setDrugs(newDrugs);
-                    }}
-                  />
-                </Col>
-                <Col span={4}>
-                  <Input
-                    placeholder="剂量如100mg"
-                    value={drug.dosage}
-                    onChange={(e) => {
-                      const newDrugs = [...drugs];
-                      newDrugs[index].dosage = e.target.value;
-                      setDrugs(newDrugs);
-                    }}
-                  />
-                </Col>
-                <Col span={4}>
-                  <InputNumber
-                    placeholder="数量"
-                    min={1}
-                    value={drug.quantity}
-                    onChange={(v) => {
-                      const newDrugs = [...drugs];
-                      newDrugs[index].quantity = v || 1;
-                      setDrugs(newDrugs);
-                    }}
-                    style={{ width: '100%' }}
-                  />
-                </Col>
-                <Col span={3}>
+                }
+                type={previewWarnings.some((w) => w.level === 'error') ? 'error' : 'warning'}
+                showIcon
+                className="mb-3"
+              />
+            )}
+
+            {drugs.length === 0 && (
+              <div className="text-center py-8 text-gray-400 border border-dashed border-gray-200 rounded-lg mb-4">
+                请在上方搜索框搜索药品添加
+              </div>
+            )}
+            {drugs.map((drug, index) => (
+              <div key={drug.id} className="p-3 bg-gray-50 rounded-lg mb-2">
+                <div className="flex justify-between items-start mb-2">
+                  <div className="flex items-center gap-2">
+                    <Pill size={14} className={drug.isRx ? 'text-red-500' : 'text-green-500'} />
+                    <span className="font-medium">{drug.drugName}</span>
+                    {drug.isRx && <Tag color="red">Rx</Tag>}
+                    <span className="text-gray-500 text-sm">{drug.spec}</span>
+                  </div>
                   <Button
                     type="text"
-                    danger
                     size="small"
-                    onClick={() => setDrugs(drugs.filter((_, i) => i !== index))}
-                  >
-                    删除
-                  </Button>
-                </Col>
-              </Row>
-            </div>
-          ))}
+                    danger
+                    icon={<X size={14} />}
+                    onClick={() => handleRemoveDrug(drug.id)}
+                  />
+                </div>
+                <Row gutter={8}>
+                  <Col span={6}>
+                    <Input
+                      size="small"
+                      placeholder="剂量"
+                      value={drug.dosage}
+                      onChange={(e) => handleUpdateDrug(drug.id, 'dosage', e.target.value)}
+                    />
+                  </Col>
+                  <Col span={6}>
+                    <Input
+                      size="small"
+                      placeholder="频次"
+                      value={drug.frequency}
+                      onChange={(e) => handleUpdateDrug(drug.id, 'frequency', e.target.value)}
+                    />
+                  </Col>
+                  <Col span={6}>
+                    <InputNumber
+                      size="small"
+                      min={1}
+                      placeholder="数量"
+                      value={drug.quantity}
+                      onChange={(v) => handleUpdateDrug(drug.id, 'quantity', v)}
+                      style={{ width: '100%' }}
+                    />
+                  </Col>
+                  <Col span={6}>
+                    <Select
+                      size="small"
+                      value={drug.isRx ? true : false}
+                      onChange={(v) => handleUpdateDrug(drug.id, 'isRx', v)}
+                    >
+                      <Option value={false}>OTC</Option>
+                      <Option value={true}>Rx处方药</Option>
+                    </Select>
+                  </Col>
+                </Row>
+              </div>
+            ))}
+          </div>
         </Form>
+      </Modal>
+
+      <Modal
+        title="处方详情"
+        open={isDetailOpen}
+        onCancel={() => setIsDetailOpen(false)}
+        width={800}
+        footer={null}
+        destroyOnClose
+      >
+        {currentPrescription && (
+          <div className="space-y-4">
+            <div className="bg-gradient-to-r from-blue-500 to-blue-600 rounded-xl p-6 text-white">
+              <div className="flex justify-between items-start">
+                <div>
+                  <h3 className="text-xl font-bold">{currentPrescription.id}</h3>
+                  <p className="text-white/80 mt-1">{currentPrescription.createTime}</p>
+                </div>
+                <div>
+                  <Tag color="white" className="bg-white/20 text-white border-0">
+                    {statusMap[currentPrescription.status].text}
+                  </Tag>
+                </div>
+              </div>
+            </div>
+
+            <Row gutter={16}>
+              <Col span={6}>
+                <Card size="small">
+                  <p className="text-gray-500 text-sm">患者</p>
+                  <p className="font-bold text-lg">
+                    {currentPrescription.patientName}
+                  </p>
+                  <p className="text-gray-500 text-sm">
+                    {currentPrescription.patientAge}岁 / {currentPrescription.patientGender === 'male' ? '男' : '女'}
+                  </p>
+                </Card>
+              </Col>
+              <Col span={6}>
+                <Card size="small">
+                  <p className="text-gray-500 text-sm">诊断</p>
+                  <p className="font-bold text-lg">{currentPrescription.diagnosis}</p>
+                </Card>
+              </Col>
+              <Col span={6}>
+                <Card size="small">
+                  <p className="text-gray-500 text-sm">医生</p>
+                  <p className="font-bold text-lg">{currentPrescription.doctor}</p>
+                </Card>
+              </Col>
+              <Col span={6}>
+                <Card size="small">
+                  <p className="text-gray-500 text-sm">风险等级</p>
+                  <p className="font-bold text-lg">
+                    {(() => {
+                      const level = currentPrescription.riskLevel || getRiskLevel(currentPrescription.warnings as ReviewResult[]);
+                      const info = getRiskLevelInfo(level);
+                      return <span className={info.color === 'red' ? 'text-red-500' : info.color === 'orange' ? 'text-orange-500' : info.color === 'yellow' ? 'text-yellow-500' : 'text-green-500'}>{info.icon} {info.text}</span>;
+                    })()}
+                  </p>
+                </Card>
+              </Col>
+            </Row>
+
+            {currentPrescription.allergies && currentPrescription.allergies.length > 0 && (
+              <Alert
+                message="患者过敏史"
+                description={currentPrescription.allergies.join('、')}
+                type="warning"
+                showIcon
+              />
+            )}
+
+            <div>
+              <p className="font-medium mb-2">处方药品</p>
+              <List
+                bordered
+                dataSource={currentPrescription.drugs}
+                renderItem={(drug) => (
+                  <List.Item className="px-4 py-3">
+                    <div className="flex justify-between w-full items-center">
+                      <div className="flex items-center gap-3">
+                        <Pill size={16} className={drug.isRx ? 'text-red-500' : 'text-green-500'} />
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium">{drug.drugName}</span>
+                            {drug.isRx && <Tag color="red">Rx</Tag>}
+                          </div>
+                          <span className="text-gray-500 text-sm">{drug.spec}</span>
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-gray-800">{drug.dosage} {drug.frequency}</p>
+                        <p className="text-gray-500 text-sm">数量: {drug.quantity}</p>
+                      </div>
+                    </div>
+                  </List.Item>
+                )}
+              />
+            </div>
+
+            {currentPrescription.warnings.length > 0 && (
+              <div>
+                <p className="font-medium mb-2">智能审查预警</p>
+                <Alert
+                  message={`发现 ${currentPrescription.warnings.length} 项用药风险`}
+                  description={
+                    <List
+                      size="small"
+                      dataSource={currentPrescription.warnings as ReviewResult[]}
+                      renderItem={(item) => (
+                        <List.Item className="px-0 py-2">
+                          <div className="flex flex-col gap-1 w-full">
+                            <div className="flex items-start gap-2">
+                              {getWarningIcon(item.type, item.level)}
+                              <span className={item.level === 'error' ? 'text-red-600 font-medium' : 'text-orange-600'}>
+                                {item.message}
+                              </span>
+                            </div>
+                            {item.suggestion && (
+                              <div className="ml-6 text-sm text-blue-600 bg-blue-50 px-3 py-2 rounded border-l-2 border-blue-400">
+                                <span className="font-medium">处理建议：</span>{item.suggestion}
+                              </div>
+                            )}
+                          </div>
+                        </List.Item>
+                      )}
+                    />
+                  }
+                  type={currentPrescription.warnings.some((w) => w.level === 'error') ? 'error' : 'warning'}
+                  showIcon
+                />
+              </div>
+            )}
+          </div>
+        )}
       </Modal>
     </div>
   );

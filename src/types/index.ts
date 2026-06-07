@@ -9,9 +9,12 @@ export interface PrescriptionDrug {
 }
 
 export interface WarningItem {
-  type: 'contraindication' | 'duplicate' | 'dosage';
+  type: 'contraindication' | 'duplicate' | 'dosage' | 'allergy';
   message: string;
   level: 'warning' | 'error';
+  suggestion?: string;
+  severity?: 'high' | 'medium' | 'low';
+  drugName?: string;
 }
 
 export interface Prescription {
@@ -25,9 +28,12 @@ export interface Prescription {
   createTime: string;
   status: 'pending' | 'approved' | 'rejected';
   warnings: WarningItem[];
+  riskLevel?: 'normal' | 'low' | 'medium' | 'high';
   auditor?: string;
   auditTime?: string;
   rejectReason?: string;
+  memberId?: string;
+  allergies?: string[];
 }
 
 export interface PurchaseRecord {
